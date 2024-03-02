@@ -8,6 +8,16 @@
 #include "inflate.h"
 #include "inffast.h"
 
+#if INTPTR_MAX == INT64_MAX
+#define REGISTER_WIDTH 64
+typedef uint64_t BIGUINT;
+typedef uint32_t SMALLUINT;
+#else
+#define REGISTER_WIDTH 32
+typedef uint32_t BIGUINT;
+typedef uint16_t SMALLUINT;
+#endif // native register size
+
 #ifdef ASMINF
 #  pragma message("Assembler code may have bugs -- use at your own risk")
 #else
@@ -61,13 +71,14 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
     unsigned whave;             /* valid bytes in the window */
     unsigned wnext;             /* window write index */
     unsigned char FAR *window;  /* allocated sliding window, if wsize != 0 */
-    unsigned long hold;         /* local strm->hold */
+    BIGUINT hold, tmpbits;         /* local strm->hold */
     unsigned bits;              /* local strm->bits */
-    code const FAR *lcode;      /* local strm->lencode */
-    code const FAR *dcode;      /* local strm->distcode */
+//    code const FAR *lcode;      /* local strm->lencode */
+//    code const FAR *dcode;      /* local strm->distcode */
     unsigned lmask;             /* mask for first level of length codes */
     unsigned dmask;             /* mask for first level of distance codes */
-    code const *here;           /* retrieved table entry */
+//    code const *here;           /* retrieved table entry */
+    uint32_t here32, *plcode, *pdcode;
     unsigned op;                /* code bits, operation, extra bits, or */
                                 /*  window position, window bytes to copy */
     unsigned len;               /* match length, unused bytes */
@@ -90,68 +101,101 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
     window = state->window;
     hold = state->hold;
     bits = state->bits;
-    lcode = state->lencode;
-    dcode = state->distcode;
+    plcode = (uint32_t *)state->lencode;
+    pdcode = (uint32_t *)state->distcode;
+//    lcode = state->lencode;
+//    dcode = state->distcode;
     lmask = (1U << state->lenbits) - 1;
     dmask = (1U << state->distbits) - 1;
 
     /* decode literals and length/distances until end-of-block or not enough
        input data or output space */
+    // the 32-bit packed structure 'code' is quicker to load as a 32-bit value
+    // instead of 3 separate loads
+    // 31-------------16 15-----8 7------0 // bit number
+    // vvvvvvvvvvvvvvvvv bbbbbbbb oooooooo // val, bits, op
     do {
-        if (bits < 15) {
+        if (bits < (REGISTER_WIDTH/2)) { // helps on 32 and 64-bit CPUs
+#ifdef UNALIGNED_OK
+            tmpbits = *(SMALLUINT *)in;
+            hold |= (BIGUINT)(tmpbits << bits);
+            in += sizeof(SMALLUINT);
+            bits += (REGISTER_WIDTH / 2);
+#else
             hold += (unsigned long)(*in++) << bits;
             bits += 8;
             hold += (unsigned long)(*in++) << bits;
             bits += 8;
+#endif
         }
-        here = lcode + (hold & lmask);
+       // here = lcode + (hold & lmask);
+        here32 = plcode[hold & lmask];
       dolen:
-        op = (unsigned)(here->bits);
+//        op = (unsigned)(here->bits);
+        op = (here32 >> 8) & 0xff; // bits
         hold >>= op;
         bits -= op;
-        op = (unsigned)(here->op);
+//        op = (unsigned)(here->op);
+        op = here32 & 0xff; // op
         if (op == 0) {                          /* literal */
-            Tracevv((stderr, here->val >= 0x20 && here->val < 0x7f ?
-                    "inflate:         literal '%c'\n" :
-                    "inflate:         literal 0x%02x\n", here->val));
-            *out++ = (unsigned char)(here->val);
+//            Tracevv((stderr, here->val >= 0x20 && here->val < 0x7f ?
+//                    "inflate:         literal '%c'\n" :
+//                    "inflate:         literal 0x%02x\n", here->val));
+//            *out++ = (unsigned char)(here->val);
+            *out++ = (uint8_t)(here32 >> 16);
         }
         else if (op & 16) {                     /* length base */
-            len = (unsigned)(here->val);
+//            len = (unsigned)(here->val);
+            len = here32 >> 16; // val
             op &= 15;                           /* number of extra bits */
             if (op) {
+#if REGISTER_WIDTH == 32
                 if (bits < op) {
-                    hold += (unsigned long)(*in++) << bits;
+                    hold += (BIGUINT)(*in++) << bits;
                     bits += 8;
                 }
+#endif
                 len += (unsigned)hold & ((1U << op) - 1);
                 hold >>= op;
                 bits -= op;
             }
             Tracevv((stderr, "inflate:         length %u\n", len));
-            if (bits < 15) {
+            if (bits < (REGISTER_WIDTH/2)) { // helps on 32 and 64-bit CPUs
+#ifdef UNALIGNED_OK
+                tmpbits = *(SMALLUINT *)in;
+                hold |= (BIGUINT)(tmpbits << bits);
+                in += sizeof(SMALLUINT);
+                bits += (REGISTER_WIDTH / 2);
+#else
                 hold += (unsigned long)(*in++) << bits;
                 bits += 8;
                 hold += (unsigned long)(*in++) << bits;
                 bits += 8;
+#endif
             }
-            here = dcode + (hold & dmask);
+//            here = dcode + (hold & dmask);
+            here32 = pdcode[hold & dmask];
           dodist:
-            op = (unsigned)(here->bits);
+//            op = (unsigned)(here->bits);
+            op = (here32 >> 8) & 0xff; // bits
             hold >>= op;
             bits -= op;
-            op = (unsigned)(here->op);
+//            op = (unsigned)(here->op);
+            op = here32 & 0xff; // op
             if (op & 16) {                      /* distance base */
-                dist = (unsigned)(here->val);
+//                dist = (unsigned)(here->val);
+                dist = here32 >> 16; // val
                 op &= 15;                       /* number of extra bits */
+#if REGISTER_WIDTH == 32
                 if (bits < op) {
-                    hold += (unsigned long)(*in++) << bits;
+                    hold += (BIGUINT)(*in++) << bits;
                     bits += 8;
                     if (bits < op) {
-                        hold += (unsigned long)(*in++) << bits;
+                        hold += (BIGUINT)(*in++) << bits;
                         bits += 8;
                     }
                 }
+#endif
                 dist += (unsigned)hold & ((1U << op) - 1);
 #ifdef INFLATE_STRICT
                 if (dist > dmax) {
@@ -233,6 +277,18 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
                             from = out - dist;  /* rest from output */
                         }
                     }
+#ifdef UNALIGNED_OK
+                    {
+                    uint8_t *pEnd = out+len;
+                        while (out < pEnd) {
+                            *(uint32_t *)out = *(uint32_t *)from;
+                            out += 4;
+                            from += 4;
+                        }
+                        // correct for possible overshoot of destination ptr
+                        out = pEnd;
+                    }
+#else
                     while (len > 2) {
                         *out++ = *from++;
                         *out++ = *from++;
@@ -244,9 +300,38 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
                         if (len > 1)
                             *out++ = *from++;
                     }
+#endif // UNALIGNED_OK
                 }
                 else {
                     from = out - dist;          /* copy direct from output */
+#ifdef UNALIGNED_OK
+                    {
+                        uint8_t *pEnd = out+len;
+                        int overlap = (int)(intptr_t)(out-from);
+                        if (overlap >= 4) { // overlap of source/dest won't impede normal copy
+                            while (out < pEnd) {
+                                *(uint32_t *)out = *(uint32_t *)from;
+                                out += 4;
+                                from += 4;
+                            }
+                            // correct for possible overshoot of destination ptr
+                            out = pEnd;
+                        } else if (overlap == 1) { // copy 1-byte pattern
+                            uint32_t pattern = *from;
+                            pattern = pattern | (pattern << 8);
+                            pattern = pattern | (pattern << 16);
+                            while (out < pEnd) {
+                                *(uint32_t *)out = pattern;
+                                out += 4;
+                            }
+                            out = pEnd; // correct possible overshoot
+                        } else { // overlap of 2 or 3
+                            while (out < pEnd) {
+                                *out++ = *from++;
+                            }
+                        }
+                    }
+#else
                     do {                        /* minimum length is three */
                         *out++ = *from++;
                         *out++ = *from++;
@@ -258,10 +343,12 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
                         if (len > 1)
                             *out++ = *from++;
                     }
+#endif // UNALIGNED_OK
                 }
             }
             else if ((op & 64) == 0) {          /* 2nd level distance code */
-                here = dcode + here->val + (hold & ((1U << op) - 1));
+//                here = dcode + here->val + (hold & ((1U << op) - 1));
+                here32 = pdcode[(here32>>16) + (hold & ((1U << op) - 1))];
                 goto dodist;
             }
             else {
@@ -271,7 +358,8 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
             }
         }
         else if ((op & 64) == 0) {              /* 2nd level length code */
-            here = lcode + here->val + (hold & ((1U << op) - 1));
+//            here = lcode + here->val + (hold & ((1U << op) - 1));
+            here32 = plcode[(here32 >> 16) + (hold & ((1U << op) - 1))];
             goto dolen;
         }
         else if (op & 32) {                     /* end-of-block */

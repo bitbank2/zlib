@@ -505,25 +505,28 @@ void ZLIB_INTERNAL _tr_init(deflate_state *s) {
  * two sons).
  */
 local void pqdownheap(deflate_state *s, ct_data *tree, int k) {
-    int v = s->heap[k];
+    int *pHeap = s->heap;
+    int heap_len = s->heap_len;
+    uint8_t *pDepth = s->depth;
+    int v = pHeap[k];
     int j = k << 1;  /* left son of k */
-    while (j <= s->heap_len) {
+    while (j <= heap_len) {
         /* Set j to the smallest of the two sons: */
-        if (j < s->heap_len &&
-            smaller(tree, s->heap[j + 1], s->heap[j], s->depth)) {
+        if (j < heap_len &&
+            smaller(tree, pHeap[j + 1], pHeap[j], pDepth)) {
             j++;
         }
         /* Exit if v is smaller than both sons */
-        if (smaller(tree, v, s->heap[j], s->depth)) break;
+        if (smaller(tree, v, pHeap[j], pDepth)) break;
 
         /* Exchange v with the smallest son */
-        s->heap[k] = s->heap[j];  k = j;
+        pHeap[k] = pHeap[j];  k = j;
 
         /* And continue down the tree, setting j to the left son of k */
         j <<= 1;
     }
-    s->heap[k] = v;
-}
+    pHeap[k] = v;
+} /* pqdownheap() */
 
 /* ===========================================================================
  * Compute the optimal bit lengths for a tree and update the total bit length
