@@ -279,14 +279,30 @@ void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start) {
                     }
 #ifdef UNALIGNED_OK
                     {
-                    uint8_t *pEnd = out+len;
-                        while (out < pEnd) {
-                            *(uint32_t *)out = *(uint32_t *)from;
-                            out += 4;
-                            from += 4;
+                        uint8_t *pEnd = out+len;
+                        intptr_t overlap = (intptr_t)(from - out);
+                        if (overlap >= 4) { // ok
+                            while (out < pEnd) {
+                                *(uint32_t *)out = *(uint32_t *)from;
+                                out += 4;
+                                from += 4;
+                            }
+                            // correct for possible overshoot of destination ptr
+                            out = pEnd;
+                        } else if (overlap == 1) { // pattern
+                            uint32_t pattern = *from;
+                            pattern = pattern | (pattern << 8);
+                            pattern = pattern | (pattern << 16);
+                            while (out < pEnd) {
+                                *(uint32_t *)out = pattern;
+                                out += 4;
+                            }
+                            out = pEnd;
+                        } else { // slow pattern
+                            while (out < pEnd) {
+                                *out++ = *from++;
+                            }
                         }
-                        // correct for possible overshoot of destination ptr
-                        out = pEnd;
                     }
 #else
                     while (len > 2) {
